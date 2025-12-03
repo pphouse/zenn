@@ -88,20 +88,47 @@ Maya1の156,960トークンは以下のように構成されています：
 
 ### プロンプトフォーマット
 
-Maya1は以下のフォーマットでプロンプトを受け付けます（`build_prompt`メソッドより）：
+Maya1は特殊な構造化フォーマットを使用します。以下の特殊トークンIDが定義されています：
 
 ```python
-content = f'<description="{description}"> {text}'
-messages = [{"role": "user", "content": content}]
-prompt = tokenizer.apply_chat_template(messages, ...)
+# 特殊トークンID
+SOH_ID = 128259  # Start of Header
+EOH_ID = 128260  # End of Header
+SOA_ID = 128261  # Start of Audio
+BOS_ID = 128000  # Beginning of Sequence
+TEXT_EOT_ID = 128009  # End of Text
+CODE_START_TOKEN_ID = 128257  # Start of Speech (SOS)
+```
+
+**正しいプロンプト構築方法：**
+
+```python
+def build_prompt(tokenizer, description: str, text: str) -> str:
+    """Build formatted prompt for Maya1."""
+    soh_token = tokenizer.decode([SOH_ID])
+    eoh_token = tokenizer.decode([EOH_ID])
+    soa_token = tokenizer.decode([SOA_ID])
+    sos_token = tokenizer.decode([CODE_START_TOKEN_ID])
+    eot_token = tokenizer.decode([TEXT_EOT_ID])
+    bos_token = tokenizer.bos_token
+
+    formatted_text = f'<description="{description}"> {text}'
+
+    prompt = (
+        soh_token + bos_token + formatted_text + eot_token +
+        eoh_token + soa_token + sos_token
+    )
+
+    return prompt
 ```
 
 **使用例：**
 
-```
-<description="Realistic male voice in the 30s age with american accent.
-Normal pitch, warm timbre, conversational pacing.">
-Hello! <excited> This is amazing!
+```python
+description = "Realistic male voice in the 30s age with american accent. Normal pitch, warm timbre, conversational pacing."
+text = "Hello! <excited> This is amazing! <laugh>"
+prompt = build_prompt(tokenizer, description, text)
+# → <SOH><BOS><description="..."> Hello! <excited>...<EOT><EOH><SOA><SOS>
 ```
 
 対応する感情タグ（`special_tokens_map.json`に定義、全20種類）：
@@ -493,16 +520,41 @@ model = AutoModelForCausalLM.from_pretrained(
 # SNACデコーダーの初期化
 snac_decoder = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").eval().cuda()
 
-# プロンプトの作成
-description = "Male voice, 30s, American accent, warm tone"
-text = "Hello! This is a test."
-content = f'<description="{description}"> {text}'
-messages = [{"role": "user", "content": content}]
-prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+# 特殊トークンID定義
+SOH_ID = 128259
+EOH_ID = 128260
+SOA_ID = 128261
+CODE_START_TOKEN_ID = 128257
+TEXT_EOT_ID = 128009
+
+# プロンプトの作成（正しいフォーマット）
+def build_prompt(tokenizer, description: str, text: str) -> str:
+    soh_token = tokenizer.decode([SOH_ID])
+    eoh_token = tokenizer.decode([EOH_ID])
+    soa_token = tokenizer.decode([SOA_ID])
+    sos_token = tokenizer.decode([CODE_START_TOKEN_ID])
+    eot_token = tokenizer.decode([TEXT_EOT_ID])
+    bos_token = tokenizer.bos_token
+    formatted_text = f'<description="{description}"> {text}'
+    return (soh_token + bos_token + formatted_text + eot_token +
+            eoh_token + soa_token + sos_token)
+
+description = "Realistic male voice in the 30s age with american accent. Normal pitch, warm timbre, conversational pacing."
+text = "Hello! <excited> This is amazing!"
+prompt = build_prompt(tokenizer, description, text)
 
 # 生成
 inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-outputs = model.generate(inputs['input_ids'], max_new_tokens=200, temperature=0.4)
+outputs = model.generate(
+    inputs['input_ids'],
+    max_new_tokens=500,
+    min_new_tokens=28,
+    temperature=0.4,
+    top_p=0.9,
+    repetition_penalty=1.1,
+    do_sample=True,
+    eos_token_id=CODE_START_TOKEN_ID + 1  # CODE_END_TOKEN_ID
+)
 
 # デコード（SNACトークンを音声に変換）
 # ...詳細は実装参照
